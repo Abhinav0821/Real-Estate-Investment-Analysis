@@ -31,12 +31,13 @@ def load_data(test_size=0.2):
     # Load and validate structured data
     df = pd.read_csv("real_estate_price_prediction.csv")
     assert df.shape[0] > 0, "No data loaded"
+    assert 'property_id' in df.columns, "Dataset must contain 'property_id' column"
     
     # Feature engineering
     features = ['Area', 'Floor', 'Num_Bedrooms', 'Num_Bathrooms', 'Property_Age', 'Proximity']
     target = 'Price'
     
-    # Splitting data before any processing
+    # Splitting data with preserved IDs
     train_df, test_df = train_test_split(df, test_size=test_size, random_state=42)
     
     # Normalization
@@ -51,7 +52,10 @@ def load_data(test_size=0.2):
     y_train_invest = (train_df[target] > price_threshold).astype(int)
     y_test_invest = (test_df[target] > price_threshold).astype(int)
     
-    return (X_train, X_test, train_df[target].values, test_df[target].values, y_train_invest, y_test_invest)
+    return (X_train, X_test, 
+            train_df[target].values, test_df[target].values,
+            y_train_invest, y_test_invest,
+            train_df['property_id'].values, test_df['property_id'].values)
 
 # -----------------------------
 # 2. Improved Linear Regression with Convergence
@@ -133,6 +137,10 @@ class LogisticRegressionGD:
 # -----------------------------
 def build_cnn(input_shape):
     model = Sequential([
+        # Data augmentation layers
+        RandomFlip("horizontal_and_vertical"),
+        RandomRotation(0.2),
+
         Conv2D(32, (3,3), activation='relu', input_shape=input_shape),
         MaxPooling2D((2,2)),
         Dropout(0.25),
@@ -145,25 +153,23 @@ def build_cnn(input_shape):
         Dense(1, activation='sigmoid')
     ])
     
-    model.compile(optimizer=Adam(learning_rate=1e-4),
-                  loss='binary_crossentropy',
-                  metrics=['accuracy', tf.keras.metrics.AUC()])
+    model.compile(optimizer=Adam(learning_rate=1e-4), loss='binary_crossentropy', metrics=['accuracy', tf.keras.metrics.AUC()])
     return model
 
-def load_images(df_indices, image_folder="property_images"):
+def load_images(property_ids, image_folder="property_images"):
     images = []
-    valid_indices = []
+    valid_ids = []
     
-    for idx in df_indices:
-        img_path = os.path.join(image_folder, f"{idx}.jpg")
+    for pid in property_ids:
+        img_path = os.path.join(image_folder, f"{pid}.jpg")
         if os.path.exists(img_path):
             img = tf.keras.preprocessing.image.load_img(
                 img_path, target_size=(224, 224), color_mode='rgb')
             img_array = tf.keras.preprocessing.image.img_to_array(img)/255.0
             images.append(img_array)
-            valid_indices.append(idx)
+            valid_ids.append(pid)
             
-    return np.array(images), valid_indices
+    return np.array(images), valid_ids
 
 # -----------------------------
 # 5. Robust Model Fusion
@@ -171,80 +177,120 @@ def load_images(df_indices, image_folder="property_images"):
 class InvestmentEnsemble:
     def __init__(self):
         self.meta_model = LogisticRegression()
-        
-    def fit(self, price_pred, logit_proba, cnn_proba, y_true):
-        # Normalizing price predictions using robust scaling
         self.price_scaler = RobustScaler()
-        price_norm = self.price_scaler.fit_transform(price_pred.reshape(-1,1))
         
-        # Creating meta-features matrix
-        X_meta = np.column_stack([price_norm, logit_proba, cnn_proba])
+    def fit(self, price_preds, logit_probas, cnn_probas, y_true):
+        # Normalize price predictions
+        price_norm = self.price_scaler.fit_transform(np.array(price_preds).reshape(-1,1))
         
-        # Training meta-model with cross-validation
+        # Create meta-features matrix
+        X_meta = np.column_stack([price_norm, logit_probas, cnn_probas])
+        
+        # Train meta-model
         self.meta_model.fit(X_meta, y_true)
         
-    def predict(self, price_pred, logit_proba, cnn_proba):
-        price_norm = self.price_scaler.transform(price_pred.reshape(-1,1))
-        X_meta = np.column_stack([price_norm, logit_proba, cnn_proba])
+    def predict(self, price_preds, logit_probas, cnn_probas):
+        price_norm = self.price_scaler.transform(np.array(price_preds).reshape(-1,1))
+        X_meta = np.column_stack([price_norm, logit_probas, cnn_probas])
         return self.meta_model.predict_proba(X_meta)[:,1]
 
 # -----------------------------
 # Main Execution Flow
 # -----------------------------
 if __name__ == "__main__":
-    # Loading and splitting data
-    X_train, X_test, y_train_price, y_test_price, y_train_invest, y_test_invest = load_data()
+    # Load data with property IDs
+    (X_train, X_test, y_train_price, y_test_price,
+     y_train_invest, y_test_invest,
+     train_ids, test_ids) = load_data()
     
-    # 1. Training Linear Regression
-    lr_model = LinearRegressionGD(alpha=0.01).fit(X_train, y_train_price)
-    train_price_pred = lr_model.predict(X_train)
-    test_price_pred = lr_model.predict(X_test)
+    # Initialize ensemble
+    ensemble = InvestmentEnsemble()
     
-    print(f"Price Model RMSE: Train - {mean_squared_error(y_train_price, train_price_pred, squared=False):.2f}, "
-          f"Test - {mean_squared_error(y_test_price, test_price_pred, squared=False):.2f}")
+    # K-Fold Cross Validation for out-of-fold predictions
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_predictions = {
+        'price': np.zeros_like(y_train_price),
+        'logit': np.zeros(len(y_train_invest)),
+        'cnn': np.zeros(len(y_train_invest))
+    }
     
-    # 2. Training Logistic Regression
-    logit_model = LogisticRegressionGD(lambda_=0.1).fit(X_train, y_train_invest)
-    train_logit_proba = logit_model.predict_proba(X_train)
-    test_logit_proba = logit_model.predict_proba(X_test)
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+        print(f"\nTraining Fold {fold+1}/5")
+        
+        # Split data
+        X_tr, X_val = X_train[train_idx], X_train[val_idx]
+        y_tr_price, y_val_price = y_train_price[train_idx], y_train_price[val_idx]
+        y_tr_invest, y_val_invest = y_train_invest[train_idx], y_train_invest[val_idx]
+        train_fold_ids = train_ids[train_idx]
+        val_fold_ids = train_ids[val_idx]
+        
+        # 1. Train Linear Regression
+        lr_model = LinearRegressionGD(alpha=0.01).fit(X_tr, y_tr_price)
+        oof_predictions['price'][val_idx] = lr_model.predict(X_val)
+        
+        # 2. Train Logistic Regression
+        logit_model = LogisticRegressionGD(lambda_=0.1).fit(X_tr, y_tr_invest)
+        oof_predictions['logit'][val_idx] = logit_model.predict_proba(X_val)
+        
+        # 3. Train CNN with Images
+        train_images, train_img_ids = load_images(train_fold_ids)
+        val_images, val_img_ids = load_images(val_fold_ids)
+        
+        # Align indices for validation images
+        val_img_idx = [np.where(val_fold_ids == vid)[0][0] for vid in val_img_ids]
+        cnn_model = build_cnn((224, 224, 3))
+        early_stop = EarlyStopping(patience=3, restore_best_weights=True)
+        
+        cnn_model.fit(
+            train_images, y_tr_invest[train_img_ids],
+            validation_data=(val_images, y_val_invest[val_img_idx]),
+            epochs=30,
+            batch_size=32,
+            callbacks=[early_stop],
+            verbose=0
+        )
+        oof_predictions['cnn'][val_idx[val_img_idx]] = cnn_model.predict(val_images).flatten()
     
-    print(f"Logit Model AUC: Train - {roc_auc_score(y_train_invest, train_logit_proba):.2f}, "
-          f"Test - {roc_auc_score(y_test_invest, test_logit_proba):.2f}")
+    # Train final meta-model on out-of-fold predictions
+    ensemble.fit(oof_predictions['price'], 
+                oof_predictions['logit'], 
+                oof_predictions['cnn'], 
+                y_train_invest)
     
-    # 3. Training CNN Model
-    # Load images only for valid indices
-    train_images, train_img_indices = load_images(np.arange(len(X_train)))
-    test_images, test_img_indices = load_images(np.arange(len(X_test)))
+    # Final evaluation on test set
+    # 1. Train final base models on full training data
+    final_lr = LinearRegressionGD(alpha=0.01).fit(X_train, y_train_price)
+    test_price_pred = final_lr.predict(X_test)
     
-    # Aligning labels with valid image indices
-    y_train_img = y_train_invest[train_img_indices]
-    y_test_img = y_test_invest[test_img_indices]
+    final_logit = LogisticRegressionGD(lambda_=0.1).fit(X_train, y_train_invest)
+    test_logit_proba = final_logit.predict_proba(X_test)
     
-    cnn_model = build_cnn((224, 224, 3))
-    early_stop = EarlyStopping(patience=3, restore_best_weights=True)
-    
-    history = cnn_model.fit(
-        train_images, y_train_img,
-        validation_data=(test_images, y_test_img),
+    # Load and predict with CNN
+    test_images, test_img_ids = load_images(test_ids)
+    test_img_idx = [np.where(test_ids == tid)[0][0] for tid in test_img_ids]
+    final_cnn = build_cnn((224, 224, 3))
+    final_cnn.fit(
+        load_images(train_ids)[0], y_train_invest,
         epochs=30,
         batch_size=32,
-        callbacks=[early_stop]
+        callbacks=[EarlyStopping(patience=3)],
+        verbose=0
     )
+    test_cnn_proba = final_cnn.predict(test_images).flatten()
     
-    # 4. Ensemble Predictions
-    ensemble = InvestmentEnsemble()
-    ensemble.fit(train_price_pred, train_logit_proba, 
-                cnn_model.predict(train_images).flatten(), y_train_invest)
+    # Align predictions with original test indices
+    aligned_cnn_proba = np.zeros(len(test_ids))
+    aligned_cnn_proba[test_img_idx] = test_cnn_proba
     
-    # Final evaluation
-    final_proba = ensemble.predict(test_price_pred, test_logit_proba,
-                                  cnn_model.predict(test_images).flatten())
+    # final predictions
+    final_proba = ensemble.predict(test_price_pred, test_logit_proba, aligned_cnn_proba)
     
-    print(f"\nFinal Ensemble Performance:")
+    # Evaluation
+    print("\nFinal Ensemble Performance:")
     print(f"AUC: {roc_auc_score(y_test_invest, final_proba):.2f}")
     print(f"Accuracy: {accuracy_score(y_test_invest, (final_proba > 0.5).astype(int)):.2f}")
     
-    # Visualize predictions
+    # Visualization
     plt.figure(figsize=(10, 6))
     plt.scatter(y_test_price, final_proba, c=y_test_invest, cmap='coolwarm', alpha=0.6)
     plt.xlabel("Actual Price")
@@ -252,7 +298,6 @@ if __name__ == "__main__":
     plt.title("Price vs Investment Probability")
     plt.colorbar(label='True Investment Class')
     plt.show()
-
 # =============================================================================
 # Conclusion:
 # This project integrates real-world data from a real estate price prediction dataset
