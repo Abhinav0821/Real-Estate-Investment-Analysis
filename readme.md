@@ -150,6 +150,6 @@ The script and data for training the models are located in the `/training` direc
 
 ## Contact
 
-Abhinav Kashyap - [Your LinkedIn Profile URL] - [your.email@example.com]
+Abhinav Kashyap - [https://www.linkedin.com/in/abhinav-kashyap-ba918a2bb/] - [abhinvincible21@gmail.com]
 
 Project Link: [https://github.com/Abhinav0821/Real-Estate-Investment-Analysis](https://github.com/Abhinav0821/Real-Estate-Investment-Analysis)
