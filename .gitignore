@@ -1,0 +1,28 @@
+# --- Python/Django ---
+venv/
+*.pyc
+__pycache__/
+instance/
+.env*
+db.sqlite3
+
+# --- Node/React ---
+node_modules/
+build/
+.pnp
+.pnp.js
+coverage/
+
+# --- Editor/OS Files ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Model & Data Files (Optional but Recommended) ---
+# These can be very large. It's better to share them via cloud storage
+# and provide a download link in your README.
+# If your files are small, you can comment these lines out by adding a #.
+# *.pkl
+# *.keras
+# *.csv
+# property_images/
