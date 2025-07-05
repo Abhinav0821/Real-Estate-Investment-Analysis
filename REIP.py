@@ -298,6 +298,33 @@ if __name__ == "__main__":
     plt.title("Price vs Investment Probability")
     plt.colorbar(label='True Investment Class')
     plt.show()
+
+    # ... (after all training and evaluation)
+    
+    print("\nSaving final models for production...")
+    
+    # Save the scaler used for structured data
+    with open('prod_scaler.pkl', 'wb') as f:
+        #re-fit the scaler on the entire training dataset
+        final_scaler = StandardScaler().fit(X_train)
+        pickle.dump(final_scaler, f)
+    
+    # Save the final Linear Regression model
+    with open('prod_linear_regression.pkl', 'wb') as f:
+        pickle.dump(final_lr.theta, f)
+    
+    # Save the final Logistic Regression model
+    with open('prod_logistic_regression.pkl', 'wb') as f:
+        pickle.dump(final_logit.theta, f)
+    
+    # Save the final CNN model in the Keras format
+    final_cnn.save('prod_cnn_model.keras')
+    
+    # Save the final ensemble model (the scaler and the logistic regressor meta-model)
+    with open('prod_ensemble.pkl', 'wb') as f:
+        pickle.dump(ensemble, f)
+        
+    print("Models saved successfully.")
 # =============================================================================
 # Conclusion:
 # This project integrates real-world data from a real estate price prediction dataset
