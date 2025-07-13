@@ -1,15 +1,9 @@
-
-# Datasets:
-#   - Structured data is obtained from the Real Estate Price Prediction Data on Figshare:
-#     https://doi.org/10.6084/m9.figshare.26517325.v1
-#
-#   - Image data: A collection of property images 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Dropout
+from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Dropout, RandomFlip, RandomRotation
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
 from sklearn.model_selection import train_test_split, KFold
@@ -54,7 +48,7 @@ def load_data(test_size=0.2):
     
     return (X_train, X_test, 
             train_df[target].values, test_df[target].values,
-            y_train_invest, y_test_invest,
+            y_train_invest.values, y_test_invest.values, # <-- ADD .values HERE
             train_df['property_id'].values, test_df['property_id'].values)
 
 # -----------------------------
@@ -235,21 +229,32 @@ if __name__ == "__main__":
         # 3. Train CNN with Images
         train_images, train_img_ids = load_images(train_fold_ids)
         val_images, val_img_ids = load_images(val_fold_ids)
-        
-        # Align indices for validation images
-        val_img_idx = [np.where(val_fold_ids == vid)[0][0] for vid in val_img_ids]
+
+        # Create aligned training labels
+        train_img_indices = [np.where(train_fold_ids == pid)[0][0] for pid in train_img_ids]
+        y_tr_invest_for_cnn = y_tr_invest[train_img_indices]
+
+        # Create aligned validation labels
+        val_img_indices = [np.where(val_fold_ids == vid)[0][0] for vid in val_img_ids]
+        y_val_invest_for_cnn = y_val_invest[val_img_indices]
+
+        # build and train the model with the correctly aligned data
         cnn_model = build_cnn((224, 224, 3))
         early_stop = EarlyStopping(patience=3, restore_best_weights=True)
-        
-        cnn_model.fit(
-            train_images, y_tr_invest[train_img_ids],
-            validation_data=(val_images, y_val_invest[val_img_idx]),
-            epochs=30,
-            batch_size=32,
-            callbacks=[early_stop],
-            verbose=0
-        )
-        oof_predictions['cnn'][val_idx[val_img_idx]] = cnn_model.predict(val_images).flatten()
+
+        if len(train_images) > 0:
+            cnn_model.fit(
+                train_images, y_tr_invest_for_cnn,
+                validation_data=(val_images, y_val_invest_for_cnn),
+                epochs=30,
+                batch_size=32,
+                callbacks=[early_stop],
+                verbose=0
+            )
+            if len(val_images) > 0:
+                val_preds = cnn_model.predict(val_images).flatten()
+                oof_predictions['cnn'][val_idx[val_img_indices]] = val_preds
+
     
     # Train final meta-model on out-of-fold predictions
     ensemble.fit(oof_predictions['price'], 
